@@ -1,0 +1,19 @@
+# render.yaml
+# This file tells Render how to build and deploy your application.
+
+services:
+  # A Web Service for our Node.js backend
+  - type: web
+    name: youtube-downloader-backend
+    # Use 'docker' to build our custom environment
+    env: docker
+    # Select the free instance type
+    plan: free
+    # Specify the region (e.g., Singapore)
+    region: singapore
+    # Set health check path to the root
+    healthCheckPath: /
+    # Optional: Set environment variables if needed in the future
+    envVars:
+      - key: NODE_ENV
+        value: production
