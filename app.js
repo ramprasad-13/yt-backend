@@ -70,6 +70,110 @@ function cleanupJobFiles(jobId) {
 }
 
 /**
+ * Executes a shell command with retry logic.
+ * @param {string} command - The command string to execute.
+ * @param {object} options - Options for child_process.exec.
+ * @param {number} retries - Number of retries.
+ * @param {number} delay - Initial delay between retries in ms.
+ * @returns {Promise<{stdout: string, stderr: string}>}
+ */
+function execWithRetries(command, options, retries = 3, delay = 1000) {
+    return new Promise((resolve, reject) => {
+        const attempt = (currentAttempt) => {
+            console.log(`Attempt ${currentAttempt}/${retries + 1} for command: ${command}`);
+            exec(command, options, (error, stdout, stderr) => {
+                if (error) {
+                    console.error(`Attempt ${currentAttempt} failed: ${error.message}`);
+                    if (currentAttempt <= retries && (stderr.includes("HTTP Error 429") || stderr.includes("Sign in to confirm you’re not a bot"))) {
+                        const nextDelay = delay * Math.pow(2, currentAttempt -1); // Exponential backoff
+                        console.log(`Retrying in ${nextDelay / 1000} seconds...`);
+                        setTimeout(() => attempt(currentAttempt + 1), nextDelay);
+                    } else {
+                        reject(error);
+                    }
+                } else {
+                    resolve({ stdout, stderr });
+                }
+            });
+        };
+        attempt(1);
+    });
+}
+
+/**
+ * Spawns a child process with retry logic for yt-dlp commands.
+ * @param {string} ytDlpPath - Path to yt-dlp executable.
+ * @param {string[]} args - Arguments for yt-dlp.
+ * @param {object} options - Options for child_process.spawn.
+ * @param {string} jobId - The job ID for socket emission.
+ * @param {object} socket - The socket.io client socket.
+ * @param {string} type - 'video' or 'audio' for progress scaling.
+ * @param {number} retries - Number of retries.
+ * @param {number} delay - Initial delay between retries in ms.
+ * @returns {Promise<string>} - Resolves with the actual downloaded file path.
+ */
+function spawnYtDlpWithRetries(ytDlpPath, args, options, jobId, socket, type, retries = 3, delay = 1000) {
+    return new Promise((resolve, reject) => {
+        const attempt = (currentAttempt) => {
+            console.log(`Attempt ${currentAttempt}/${retries + 1} for yt-dlp ${type} download.`);
+            const process = spawn(ytDlpPath, args, options);
+
+            let stdoutBuffer = '';
+            let stderrBuffer = '';
+
+            process.stdout.on('data', (data) => {
+                const output = data.toString();
+                stdoutBuffer += output;
+                const progressMatch = output.match(/\[download\]\s+(\d+\.\d+)%/);
+                if (progressMatch && activeDownloads[jobId]) {
+                    const progress = parseFloat(progressMatch[1]);
+                    let scaledProgress;
+                    if (type === 'video') {
+                        scaledProgress = 10 + (progress * 0.4);
+                        socket.emit('downloadStatus', { status: 'downloading_video', message: `Downloading video stream: ${progress.toFixed(1)}%`, progress: scaledProgress });
+                    } else { // type === 'audio'
+                        const videoFormatId = activeDownloads[jobId].videoFormatId;
+                        scaledProgress = videoFormatId ? (50 + (progress * 0.25)) : (10 + (progress * 0.8));
+                        socket.emit('downloadStatus', { status: 'downloading_audio', message: `Downloading audio stream: ${progress.toFixed(1)}%`, progress: scaledProgress });
+                    }
+                    activeDownloads[jobId].progress = scaledProgress;
+                }
+                console.log(`[${type}-dlp] ${output.trim()}`);
+            });
+
+            process.stderr.on('data', (data) => {
+                const output = data.toString();
+                stderrBuffer += output;
+                console.error(`[${type}-dlp-err] ${output.trim()}`);
+            });
+
+            process.on('close', (code) => {
+                if (code === 0) {
+                    const jobDownloadPath = options.cwd;
+                    const actualFile = fs.readdirSync(jobDownloadPath).find(f => f.startsWith(`${jobId}_${type}`));
+                    if (actualFile) {
+                        resolve(path.join(jobDownloadPath, actualFile));
+                    } else {
+                        reject(new Error(`${type} file not found after download.`));
+                    }
+                } else {
+                    const errorMessage = `yt-dlp ${type} download failed with code ${code}. Stderr: ${stderrBuffer}`;
+                    if (currentAttempt <= retries && (stderrBuffer.includes("HTTP Error 429") || stderrBuffer.includes("Sign in to confirm you’re not a bot"))) {
+                        const nextDelay = delay * Math.pow(2, currentAttempt - 1); // Exponential backoff
+                        console.log(`Retrying ${type} download in ${nextDelay / 1000} seconds...`);
+                        setTimeout(() => attempt(currentAttempt + 1), nextDelay);
+                    } else {
+                        reject(new Error(errorMessage));
+                    }
+                }
+            });
+        };
+        attempt(1);
+    });
+}
+
+
+/**
  * Handles the actual download and merging process.
  * This function will be called asynchronously to prevent blocking the main thread.
  * @param {string} youtubeUrl - The URL of the YouTube video.
@@ -100,6 +204,8 @@ async function processDownload(youtubeUrl, videoFormatId, audioFormatId, jobId, 
         return;
     }
 
+    const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36';
+
     try {
         let videoFile = path.join(jobDownloadPath, `${jobId}_video`);
         let audioFile = path.join(jobDownloadPath, `${jobId}_audio`);
@@ -113,43 +219,12 @@ async function processDownload(youtubeUrl, videoFormatId, audioFormatId, jobId, 
         // --- Step 1: Download Video Stream (if video format provided) ---
         if (videoFormatId) {
             socket.emit('downloadStatus', { status: 'downloading_video', message: 'Downloading video stream...', progress: 10 });
-            const ytDlpVideoCommand = `yt-dlp -f ${videoFormatId} -o "${videoFile}.%(ext)s" "${youtubeUrl}"`;
-            console.log(`Downloading video: ${ytDlpVideoCommand}`);
-            await new Promise((resolve, reject) => {
-                // Using --user-agent to mimic a browser, which can help bypass some bot detections
-                const videoProcess = spawn('yt-dlp', ['-f', videoFormatId, '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36', '-o', `${videoFile}.%(ext)s`, youtubeUrl], { cwd: jobDownloadPath });
-
-                videoProcess.stdout.on('data', (data) => {
-                    const output = data.toString();
-                    // Basic progress parsing (can be more sophisticated)
-                    const progressMatch = output.match(/\[download\]\s+(\d+\.\d+)%/);
-                    if (progressMatch && activeDownloads[jobId]) {
-                        const progress = parseFloat(progressMatch[1]);
-                        const scaledProgress = 10 + (progress * 0.4); // Scale to 10-50% for video download
-                        activeDownloads[jobId].progress = scaledProgress;
-                        socket.emit('downloadStatus', { status: 'downloading_video', message: `Downloading video stream: ${progress.toFixed(1)}%`, progress: scaledProgress });
-                    }
-                    console.log(`[video-dlp] ${output.trim()}`);
-                });
-
-                videoProcess.stderr.on('data', (data) => {
-                    console.error(`[video-dlp-err] ${data.toString().trim()}`);
-                });
-
-                videoProcess.on('close', (code) => {
-                    if (code === 0) {
-                        const actualVideoFile = fs.readdirSync(jobDownloadPath).find(f => f.startsWith(`${jobId}_video`));
-                        if (actualVideoFile) {
-                            videoFile = path.join(jobDownloadPath, actualVideoFile);
-                            resolve();
-                        } else {
-                            reject(new Error("Video file not found after download."));
-                        }
-                    } else {
-                        reject(new Error(`yt-dlp video download failed with code ${code}`));
-                    }
-                });
-            });
+            
+            videoFile = await spawnYtDlpWithRetries('yt-dlp', 
+                ['-f', videoFormatId, '--user-agent', USER_AGENT, '--no-check-certificates', '-o', `${videoFile}.%(ext)s`, youtubeUrl], 
+                { cwd: jobDownloadPath }, jobId, socket, 'video'
+            );
+            
             if (activeDownloads[jobId]) {
               activeDownloads[jobId].progress = 50;
               socket.emit('downloadStatus', { status: 'downloading_video_complete', message: 'Video download complete!', progress: 50 });
@@ -160,42 +235,12 @@ async function processDownload(youtubeUrl, videoFormatId, audioFormatId, jobId, 
         // --- Step 2: Download Audio Stream (if audio format provided) ---
         if (audioFormatId) {
             socket.emit('downloadStatus', { status: 'downloading_audio', message: 'Downloading audio stream...', progress: videoFormatId ? 55 : 10 });
-            const ytDlpAudioCommand = `yt-dlp -f ${audioFormatId} -o "${audioFile}.%(ext)s" "${youtubeUrl}"`;
-            console.log(`Downloading audio: ${ytDlpAudioCommand}`);
-            await new Promise((resolve, reject) => {
-                // Using --user-agent to mimic a browser, which can help bypass some bot detections
-                const audioProcess = spawn('yt-dlp', ['-f', audioFormatId, '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36', '-o', `${audioFile}.%(ext)s`, youtubeUrl], { cwd: jobDownloadPath });
+            
+            audioFile = await spawnYtDlpWithRetries('yt-dlp',
+                ['-f', audioFormatId, '--user-agent', USER_AGENT, '--no-check-certificates', '-o', `${audioFile}.%(ext)s`, youtubeUrl],
+                { cwd: jobDownloadPath }, jobId, socket, 'audio'
+            );
 
-                audioProcess.stdout.on('data', (data) => {
-                    const output = data.toString();
-                    const progressMatch = output.match(/\[download\]\s+(\d+\.\d+)%/);
-                    if (progressMatch && activeDownloads[jobId]) {
-                        const progress = parseFloat(progressMatch[1]);
-                        const scaledProgress = videoFormatId ? (50 + (progress * 0.25)) : (10 + (progress * 0.8)); // Scale for audio download
-                        activeDownloads[jobId].progress = scaledProgress;
-                        socket.emit('downloadStatus', { status: 'downloading_audio', message: `Downloading audio stream: ${progress.toFixed(1)}%`, progress: scaledProgress });
-                    }
-                    console.log(`[audio-dlp] ${output.trim()}`);
-                });
-
-                audioProcess.stderr.on('data', (data) => {
-                    console.error(`[audio-dlp-err] ${data.toString().trim()}`);
-                });
-
-                audioProcess.on('close', (code) => {
-                    if (code === 0) {
-                        const actualAudioFile = fs.readdirSync(jobDownloadPath).find(f => f.startsWith(`${jobId}_audio`));
-                        if (actualAudioFile) {
-                            audioFile = path.join(jobDownloadPath, actualAudioFile);
-                            resolve();
-                        } else {
-                            reject(new Error("Audio file not found after download."));
-                        }
-                    } else {
-                        reject(new Error(`yt-dlp audio download failed with code ${code}`));
-                    }
-                });
-            });
             if (activeDownloads[jobId]) {
               activeDownloads[jobId].progress = videoFormatId ? 75 : 90;
               socket.emit('downloadStatus', { status: 'downloading_audio_complete', message: 'Audio download complete!', progress: activeDownloads[jobId].progress });
@@ -293,28 +338,24 @@ app.get('/', (req, res) => {
  * Body: { "url": "https://www.youtube.com/watch?v=..." }
  * Description: Fetches available video and audio formats from a YouTube URL.
  */
-app.post('/api/getVideoInfo', (req, res) => {
+app.post('/api/getVideoInfo', async (req, res) => {
     const youtubeUrl = req.body.url;
 
     if (!youtubeUrl) {
         return res.status(400).json({ success: false, error: "YouTube URL is required." });
     }
 
+    const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36";
     // Command to execute: yt-dlp to get all formats in JSON format
     // Added --user-agent to mimic a browser, which can help bypass some bot detections
-    const command = `yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36" --dump-json -S "res,ext:mp4:m4a" "${youtubeUrl}"`;
+    // Added --no-check-certificates to potentially bypass SSL errors in some environments
+    const command = `yt-dlp --user-agent "${USER_AGENT}" --no-check-certificates --dump-json -S "res,ext:mp4:m4a" "${youtubeUrl}"`;
     console.log(`Executing: ${command}`);
 
-    // Increased maxBuffer for large JSON responses from yt-dlp
-    exec(command, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
-        if (error) {
-            console.error(`exec error for getVideoInfo: ${error.message}`);
-            // Explicitly check for yt-dlp specific errors like "no such video"
-            if (stderr.includes("no such video") || stderr.includes("private video") || stderr.includes("unavailable")) {
-                return res.status(404).json({ success: false, error: "Video not found, private, or unavailable." });
-            }
-            return res.status(500).json({ success: false, error: `Error fetching video info: ${error.message}` });
-        }
+    try {
+        // Increased maxBuffer for large JSON responses from yt-dlp
+        const { stdout, stderr } = await execWithRetries(command, { maxBuffer: 1024 * 1024 * 50 });
+        
         if (stderr) {
             // yt-dlp often outputs warnings to stderr, but still works. Log them.
             console.warn(`yt-dlp stderr (warnings likely): ${stderr}`);
@@ -402,7 +443,10 @@ app.post('/api/getVideoInfo', (req, res) => {
             console.error(`JSON parse error in getVideoInfo: ${parseError.message}`);
             res.status(500).json({ success: false, error: "Failed to parse video information from yt-dlp. Invalid URL or video unavailable." });
         }
-    });
+    } catch (error) {
+        console.error(`Error during yt-dlp info fetch (with retries): ${error.message}`);
+        return res.status(500).json({ success: false, error: `Error fetching video info: ${error.message}. Please try again later.` });
+    }
 });
 
 /**
