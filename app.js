@@ -116,7 +116,8 @@ async function processDownload(youtubeUrl, videoFormatId, audioFormatId, jobId, 
             const ytDlpVideoCommand = `yt-dlp -f ${videoFormatId} -o "${videoFile}.%(ext)s" "${youtubeUrl}"`;
             console.log(`Downloading video: ${ytDlpVideoCommand}`);
             await new Promise((resolve, reject) => {
-                const videoProcess = spawn('yt-dlp', ['-f', videoFormatId, '-o', `${videoFile}.%(ext)s`, youtubeUrl], { cwd: jobDownloadPath });
+                // Using --user-agent to mimic a browser, which can help bypass some bot detections
+                const videoProcess = spawn('yt-dlp', ['-f', videoFormatId, '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36', '-o', `${videoFile}.%(ext)s`, youtubeUrl], { cwd: jobDownloadPath });
 
                 videoProcess.stdout.on('data', (data) => {
                     const output = data.toString();
@@ -162,7 +163,8 @@ async function processDownload(youtubeUrl, videoFormatId, audioFormatId, jobId, 
             const ytDlpAudioCommand = `yt-dlp -f ${audioFormatId} -o "${audioFile}.%(ext)s" "${youtubeUrl}"`;
             console.log(`Downloading audio: ${ytDlpAudioCommand}`);
             await new Promise((resolve, reject) => {
-                const audioProcess = spawn('yt-dlp', ['-f', audioFormatId, '-o', `${audioFile}.%(ext)s`, youtubeUrl], { cwd: jobDownloadPath });
+                // Using --user-agent to mimic a browser, which can help bypass some bot detections
+                const audioProcess = spawn('yt-dlp', ['-f', audioFormatId, '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36', '-o', `${audioFile}.%(ext)s`, youtubeUrl], { cwd: jobDownloadPath });
 
                 audioProcess.stdout.on('data', (data) => {
                     const output = data.toString();
@@ -299,10 +301,8 @@ app.post('/api/getVideoInfo', (req, res) => {
     }
 
     // Command to execute: yt-dlp to get all formats in JSON format
-    // --dump-json outputs the video information in JSON format.
-    // -S "res,ext:mp4:m4a" sorts formats by resolution, prioritizing mp4/m4a.
-    // --compat-options no-youtube-html5-player-quality prevents issues with YouTube changing quality.
-    const command = `yt-dlp --dump-json -S "res,ext:mp4:m4a" "${youtubeUrl}"`;
+    // Added --user-agent to mimic a browser, which can help bypass some bot detections
+    const command = `yt-dlp --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36" --dump-json -S "res,ext:mp4:m4a" "${youtubeUrl}"`;
     console.log(`Executing: ${command}`);
 
     // Increased maxBuffer for large JSON responses from yt-dlp
