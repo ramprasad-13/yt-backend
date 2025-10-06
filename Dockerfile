@@ -8,11 +8,13 @@ FROM node:18-slim
 WORKDIR /usr/src/app
 
 # 3. Install necessary dependencies for ffmpeg, yt-dlp, and git
+# Added 'ca-certificates' to ensure SSL certificates are trusted
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     wget \
     python3 \
+    ca-certificates \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
@@ -33,4 +35,5 @@ COPY . .
 EXPOSE 4000
 
 # 9. Define the command to run your app
-CMD ["node", "app.js"]
+CMD ["node", "index.js"]
+
