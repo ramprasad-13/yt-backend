@@ -35,5 +35,5 @@ COPY . .
 EXPOSE 4000
 
 # 9. Define the command to run your app
-CMD ["node", "index.js"]
+CMD ["node", "app.js"]
 
