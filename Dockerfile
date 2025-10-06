@@ -26,6 +26,8 @@ RUN wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /us
 COPY package*.json ./
 
 # 6. Install your Node.js app's dependencies
+# We specify an older version of uuid that is compatible with require()
+RUN npm install uuid@8.3.2
 RUN npm install --production
 
 # 7. Copy the rest of your application code
@@ -34,6 +36,6 @@ COPY . .
 # 8. Expose the port your app runs on
 EXPOSE 4000
 
-# 9. Define the command to run your app
+# 9. Define the command to run your app (using app.js as requested)
 CMD ["node", "app.js"]
 
