@@ -221,7 +221,7 @@ async function processDownload(youtubeUrl, videoFormatId, audioFormatId, jobId, 
             socket.emit('downloadStatus', { status: 'downloading_video', message: 'Downloading video stream...', progress: 10 });
             
             videoFile = await spawnYtDlpWithRetries('yt-dlp', 
-                ['-f', videoFormatId, '--user-agent', USER_AGENT, '--no-check-certificates', '-o', `${videoFile}.%(ext)s`, youtubeUrl], 
+                ['-f', videoFormatId, '--user-agent', USER_AGENT, '--referer', 'https://www.youtube.com/', '--no-check-certificates', '-o', `${videoFile}.%(ext)s`, youtubeUrl], 
                 { cwd: jobDownloadPath }, jobId, socket, 'video'
             );
             
@@ -237,7 +237,7 @@ async function processDownload(youtubeUrl, videoFormatId, audioFormatId, jobId, 
             socket.emit('downloadStatus', { status: 'downloading_audio', message: 'Downloading audio stream...', progress: videoFormatId ? 55 : 10 });
             
             audioFile = await spawnYtDlpWithRetries('yt-dlp',
-                ['-f', audioFormatId, '--user-agent', USER_AGENT, '--no-check-certificates', '-o', `${audioFile}.%(ext)s`, youtubeUrl],
+                ['-f', audioFormatId, '--user-agent', USER_AGENT, '--referer', 'https://www.youtube.com/', '--no-check-certificates', '-o', `${audioFile}.%(ext)s`, youtubeUrl],
                 { cwd: jobDownloadPath }, jobId, socket, 'audio'
             );
 
@@ -348,8 +348,9 @@ app.post('/api/getVideoInfo', async (req, res) => {
     const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36";
     // Command to execute: yt-dlp to get all formats in JSON format
     // Added --user-agent to mimic a browser, which can help bypass some bot detections
+    // Added --referer to make the request appear to originate from YouTube itself
     // Added --no-check-certificates to potentially bypass SSL errors in some environments
-    const command = `yt-dlp --user-agent "${USER_AGENT}" --no-check-certificates --dump-json -S "res,ext:mp4:m4a" "${youtubeUrl}"`;
+    const command = `yt-dlp --user-agent "${USER_AGENT}" --referer "https://www.youtube.com/" --no-check-certificates --dump-json -S "res,ext:mp4:m4a" "${youtubeUrl}"`;
     console.log(`Executing: ${command}`);
 
     try {
